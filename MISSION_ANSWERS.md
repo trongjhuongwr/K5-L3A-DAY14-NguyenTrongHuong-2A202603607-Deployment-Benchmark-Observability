@@ -172,7 +172,39 @@ POST http://localhost/ask -> HTTP/1.1 200 OK
 
 ## Part 3: Cloud Deployment
 
-*(Theo lộ trình K5 trong `CHECKPOINTS.md`, phần này sẽ thực hiện ở CP6 sau khi hoàn thành Part 6 để deploy trực tiếp agent trong `06-lab-complete/`.)*
+### Exercise 3.1 & 3.2: Deploy `06-lab-complete/` lên Render (Free Tier)
+
+- **Public URL:** `https://k5-l3a-day14-nguyentronghuong.onrender.com`
+- **Nền tảng:** Render Web Service (`runtime: docker`, Root Directory: `06-lab-complete`, Region: `Singapore`) kết nối Render Key Value (Redis).
+- **Screenshots:**
+  - `screenshots/dashboard.png`
+  - `screenshots/running.png`
+  - `screenshots/test.png`
+- **Kết quả kiểm tra URL public:**
+
+```text
+GET  /health -> HTTP/2 200 {"status":"ok","environment":"production","uptime_seconds":154.9}
+GET  /ready  -> HTTP/2 200 {"ready":true}
+POST /ask (no X-API-Key) -> HTTP/2 401 {"detail":"Invalid or missing API key. Provide header: X-API-Key"}
+POST /ask (with X-API-Key) -> HTTP/2 200 (xem ảnh screenshots/test.png)
+```
+
+### So sánh `railway.toml` và `render.yaml` (Exercise 3.2)
+
+| Khía cạnh | `railway.toml` | `render.yaml` | Vì sao khác nhau |
+|---|---|---|---|
+| **Định dạng & phạm vi** | TOML (`[build]`, `[deploy]`), cấu hình cho **1 service** hiện tại | YAML (`services:` list), chuẩn **Infrastructure-as-Code (Blueprint)** khai báo cả Web Service lẫn Redis (`type: keyvalue`/`redis`) trong cùng một file | Railway quản lý từng service riêng trong Project và nối biến bằng reference `${{Redis.REDIS_URL}}`, còn Render Blueprint cho phép định nghĩa toàn bộ topology đa dịch vụ ở một file. |
+| **Build & Runtime** | `builder = "DOCKERFILE"`, `dockerfilePath = "Dockerfile"` | `runtime: docker` (hoặc `runtime: python` kèm `buildCommand` / `startCommand`), chỉ rõ `plan: free`, `region: singapore` | Render yêu cầu khai báo tường minh gói tài nguyên (`plan`) và vùng (`region`) trong Blueprint; Railway chọn tài nguyên theo usage trên dashboard. |
+| **Health check** | `healthcheckPath = "/health"`, `healthcheckTimeout = 30` | `healthCheckPath: /health` | Cùng mục đích kiểm tra liveness nhưng khác cú pháp theo schema từng nền tảng. |
+| **Quản lý Secrets & Env** | Không khai báo env/secret trong `railway.toml`; đặt qua CLI (`railway variables set`) hoặc Dashboard | Khai báo trực tiếp `envVars:` trong YAML; secret bắt buộc dùng `generateValue: true` hoặc `sync: false`, và nối Redis qua `fromService:` | Vì `render.yaml` được commit lên Git, Render cung cấp cơ chế `sync: false` / `generateValue: true` để tránh lộ secret trong file YAML. |
+
+### Exercise 3.3: GCP Cloud Run CI/CD Pipeline (`03-cloud-deployment/production-cloud-run/`)
+
+Đọc `cloudbuild.yaml` và `service.yaml`, pipeline CI/CD của Cloud Run đi qua 4 bước tuần tự khi có push lên nhánh `main`:
+1. **`test`:** Chạy container `python:3.11-slim`, cài dependencies và chạy `pytest tests/ -v` để đảm bảo code pass test trước khi đóng gói.
+2. **`build`:** Build Docker image gắn 2 tag `gcr.io/$PROJECT_ID/ai-agent:$COMMIT_SHA` và `:latest`, tận dụng layer cache từ image `:latest` trước đó (`--cache-from`).
+3. **`push`:** Đẩy image với các tag vừa build lên Google Container Registry (`gcr.io/$PROJECT_ID/ai-agent`).
+4. **`deploy`:** Gọi `gcloud run deploy` triển khai image `$COMMIT_SHA` lên Cloud Run (`asia-southeast1`), cấu hình autoscale (`--min-instances=1` tránh cold start, `--max-instances=10`), tài nguyên (`512Mi`, `1` CPU) và gắn secret từ GCP Secret Manager; file `service.yaml` mô tả cấu hình Knative tương đương dưới dạng IaC (kèm `containerConcurrency: 80`, `livenessProbe` `/health` và `startupProbe` `/ready`).
 
 ---
 
@@ -376,3 +408,6 @@ Kết quả chạy `python3 check_production_ready.py` chế độ đầy đủ 
 - **CP3 (Part 4):** Hỏi AI hỗ trợ chạy kiểm chứng thực tế API Key auth (`develop`), JWT auth + Rate limiting 10 req/min (`production`, tài khoản `student`/`demo123`) và phân tích Cost Guard. Đã tự kiểm tra logic trong `04-api-gateway/develop/app.py`, `production/auth.py`, `rate_limiter.py`, `cost_guard.py`; toàn bộ mã HTTP (`401`, `403`, `200`, `429`) và header `Retry-After` trong bài đều lấy từ kết quả chạy thật (đã che token).
 - **CP4 (Part 5):** Hỏi AI hỗ trợ chạy kiểm chứng `05-scaling-reliability/develop/app.py` (gửi `SIGTERM`) và stack `production` (`-p k5-day14-scaling --scale agent=3` + `test_stateless.py`). Đã tự đối chiếu mã nguồn `develop/app.py`, `production/app.py`, `docker-compose.yml` và ghi nhận kết quả thật (3 instances cùng chia sẻ 10 messages qua Redis).
 - **CP5 (Part 6):** Hỏi AI hỗ trợ thiết kế và hoàn thiện TODO trong `06-lab-complete/` (`app/config.py`, `app/redis_client.py`, `app/auth.py`, `app/rate_limiter.py`, `app/cost_guard.py`, `app/main.py`, `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example`, `railway.toml`). Sau lần chạy đầu bị lỗi `ModuleNotFoundError: No module named 'uvicorn'` trong container (do `--user` lệch `$HOME=/app` của `appuser`), đã tự chuyển Dockerfile sang `/opt/venv` độc lập và chạy lại `python3 check_production_ready.py` đạt `PASS 12/12` (41/41 checks passed).
+- **CP6 (Part 3):** Hỏi AI hỗ trợ cấu hình `06-lab-complete/render.yaml` cho gói Render Free Tier, viết `DEPLOYMENT.md`, kiểm tra các endpoint public (`/health`, `/ready`, `/ask` không key) và đối chiếu `railway.toml` vs `render.yaml` cùng `03-cloud-deployment/production-cloud-run/` (`cloudbuild.yaml`, `service.yaml`). Tự thực hiện tạo Render Key Value (Redis) và Web Service trên Render Dashboard với Public URL `https://k5-l3a-day14-nguyentronghuong.onrender.com`.
+- **CP7 (Part 7 Bước 1):** Hỏi AI hỗ trợ chạy chuỗi benchmark `load_test.py` (c=1, 10, 50, 100 và `MOCK_SLOW_RATE=0, 0.03, 0.1`) và `eval/run_eval.py` trên `develop/`, phân tích 2 câu thiếu keyword (`scaling-03`, `security-02`) để bổ sung `KNOWLEDGE_BASE` trong `mock_llm.py`. Đã đối chiếu toàn bộ số liệu trong `BENCHMARK_REPORT.md` mục 1–3 khớp 100% với các file JSON trong `reports/` và kiểm chứng `eval_v2_fixed.json` đạt `100.0% (23/23)` không regression.
+- **CP8 (Part 7 Bước 2):** Hỏi AI hỗ trợ chạy `promtool test rules`, bật stack Observability (`-p k5-day14-observability`), sửa lỗi `--user` lệch `$HOME=/app` trong `production/Dockerfile` sang `/opt/venv` để container khởi động được, chạy Locust headless `scale=1` và `scale=3` (với `--no-deps`), truy vấn Jaeger/Prometheus và thực hiện các thí nghiệm chaos A–E. Toàn bộ số liệu trong `BENCHMARK_REPORT.md` mục 4–6 đều lấy trực tiếp từ `scale_1_stats.csv`, `scale_3_stats.csv`, Jaeger API `/api/v3/traces`, Prometheus `/api/v1/alerts` và log JSON của container `agent`.
